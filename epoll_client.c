@@ -24,6 +24,14 @@ int main(int argc, char* argv[]){
 		close(fd);
 		return -1;
 	}
+	mybhs_t req;
+	memset(&req, 0, sizeof(req));
+	req.opcode = 0x01;
+	if((err=write(fd, &req, HEADER_LEN))<0){
+		printf("login failed, errno: %d, reason:%s\n", errno, strerror(errno));
+		exit(1);
+	}
+	
 	char write_buff[BUF_LEN];
 	int count;
 	while(1){

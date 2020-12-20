@@ -27,9 +27,10 @@ int main(){
 		printf("nfds=%d\n", nfds);
 		for(int i=0;i<nfds;i++){
 			event = events[i];
-			usr_event_data_t* data = (usr_event_data_t*)(event.data.ptr);
-			pfun handler = data->handler;
+			usr_event_data_t* ep_data = (usr_event_data_t*)(event.data.ptr);
+			pfun handler = ep_data->handler;
 			//pfun handler =(event_data_t*) (event.data.ptr)->handler;
+			void* data = ep_data->data;
 			handler(event.events, data);
 		}
 	}

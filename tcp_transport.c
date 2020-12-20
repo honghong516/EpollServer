@@ -13,6 +13,7 @@ int epfd;
 int listenfd;
 void connection_acception(int event, void* data);
 int data_event_rx_handler(connection_t* conn);
+int data_event_tx_handler(connection_t *conn);
 int conn_destroy(connection_t* conn);
 int conn_init(connection_t* conn);
 int conn_exit(connection_t* conn);
@@ -179,24 +180,25 @@ void connection_acception(int event, void* data){
 	memcpy(conn->initiator, address_str, strlen(address_str));
 	memcpy(conn->target, address_local, strlen(address_local));
 	conn->fd = fd;
-	if(epoll_event_add(fd,EPOLLIN, tcp_data_event_handler, (void*)conn)<0){
+	
+	if(epoll_event_add(fd,EPOLLIN, tcp_data_event_handler, conn)<0){
 		conn_exit(conn);
 		return;
 	}
-	conn->state = SCSI;
-	conn_read_pdu(conn);
 	printf("connect succcessfully,fd:%d,initiator address: %s, target address: %s\n", fd, address_str, address_local);
 	return;	
 }
 void conn_read_pdu(connection_t* conn){
 	conn->rx_iostate = RX_HEADER;
 	conn->rx_buffer = &conn->req;
-	conn->rx_size = PDU_LEN;
+	conn->rx_size = HEADER_LEN;
+	conn->rx_iostate = RX_HEADER;
 }
 int conn_init(connection_t* conn){
+	memset(conn,0, sizeof(connection_t));
 	conn->rx_buffer = NULL;
 	conn->tx_buffer = NULL;
-	conn->fd = -1;
+	conn->fd = -10;
 	conn->state = FREE;
 	return 0;
 }
@@ -240,40 +242,127 @@ int conn_close(connection_t* conn){
 void tcp_data_event_handler(int event, void* data){
 	int err;
 	connection_t *conn = (connection_t*)data;
-	int fd = conn->fd;
-        if(fd<0){
-                printf("fd meet error\n");
-                conn_close(conn);
-                return;
-        }
-        printf("event:%d, fd:%d\n", event, fd);
-	if(event|EPOLLIN){
-		err = data_event_rx_handler(conn);
-		if(err<0){
-			printf("event rx failed, errno:%d, reason:%s\n", errno, strerror(errno));
-			conn_close(conn);
-		}
+        printf("event:%d, fd:%d\n", event, conn->fd);
+	if(event & EPOLLIN){
+		data_event_rx_handler(conn);
+	}
+	if(event & EPOLLOUT){
+		data_event_tx_handler(conn);
+	}
+	if(conn->state==CLOSE){
+		conn_close(conn);
 	}
 	return;
 }
 
+Task* rx_task_allocate(connection_t *conn){
+	Task* task = (Task*)malloc(sizeof(Task));
+	if(!task){
+		printf("allocate mem for task failed\n");
+		return NULL;
+	}
+	task->conn = conn;
+	mybhs_t* req = &conn->req;
+	task->len = req->len;
+	task->off = req->off;
+	if(task->len>0){
+		void* data = malloc(task->len);
+		if(!data){
+			printf("allocate mem for task failed\n");
+			free(task);
+			return NULL;
+		}
+		task->data = data;
+	}
+	return task;
+}
+
+int rx_task_start(connection_t *conn){
+	mypdu_t *req;
+	Task* task = rx_task_allocate(conn);
+	if(!task){
+		return -1;
+	} 
+	conn->rx_task = task;
+	conn->rx_iostate = RX_DATA;
+	conn->rx_buffer = task->data;
+	conn->rx_size = task->len;
+	return 0;
+}
+
+int rx_task_done(connection_t *conn){
+	Task* task = conn->rx_task;
+	int len = task->len;
+	int off = task->off;
+	char* data = task->data;
+	printf("off=%d, len=%d, data=%s\n", off, len, data);
+	return 0;
+}
 
 int data_event_rx_handler(connection_t *conn){
+	int ret;
 	int fd = conn->fd;
-	mypdu_t* pdu = pdu_init();
-	if(!pdu){
-		printf("pdu allocated failed\n");
+	if(fd<0){
+		printf("invalid fd: %d\n", fd);
+		return -1;
+	}
+	switch(conn->rx_iostate){
+	RX_HEADER:
+		ret = do_recv(conn, RX_INIT_DATA);
+		if(ret<0 || conn->rx_iostate != RX_INIT_DATA)
+			break;
+	RX_INIT_DATA:
+		if(conn->state==SCSI){
+			ret = rx_task_start(conn);
+			if(ret<0||conn->rx_iostate != RX_DATA)
+				break;
+		}else{
+			conn->rx_iostate = RX_DATA;
+		}
+	RX_DATA:
+		ret = do_recv(conn, RX_END);
+		if(ret<0 || conn->rx_iostate != RX_END)
+			break;		
+	RX_END:
+		break;
+	default:
+		printf("unknown rx_iostate %d\n", conn->rx_iostate);
+		conn->state = CLOSE;
+		return -1;
+	}
+	if(ret<0 || conn->rx_iostate != RX_END || conn->state == CLOSE)
 		return 0;
+	if(conn->rx_size){
+		printf("recv not finish, exit error, exit...\n");
+		exit(1);
+	} 
+	if(conn->state==SCSI){
+		ret = rx_task_done(conn);
+		if(ret<0){
+			conn->state = CLOSE;
+			printf("rx_task_done failed, ret is %d\n", ret);
+			return ret;
+		}
+	}else{
+		ret = epoll_event_mod(fd, EPOLLOUT, tcp_data_event_handler, conn);
+		if(ret<0){
+			printf("mod event EPOLLOUT failed\n");
+			conn->state = CLOSE;
+			return ret;
+		}
 	}
-	int count = recv_message(fd, pdu);
-	if(count<0){
-		printf("recv result failed, return code:%d\n", count);
-		return count;
-	}
-	if(count>0){
-		//printf("read data count:%d, data value %s\n", count, (char*)pdu->data);
-		
-	}
+	return 0;
+}
+int data_event_tx_handler(connection_t *conn){
+	int fd = conn->fd;
+	printf("tx handler is called, fd: %d, conn state:%d\n", conn->fd, conn->state);
+	conn->state = SCSI;
+	int ret = epoll_event_mod(fd, EPOLLIN, tcp_data_event_handler, conn);
+	if(ret<0){
+		printf("mod event EPOLLOUT failed\n");
+		conn->state = CLOSE;
+		return ret;
+	}	
 	return 0;
 }
 
@@ -302,7 +391,6 @@ int epoll_event_mod(int fd,int events, pfun fun, void* data){
 	memset(ed,0,sizeof(usr_event_data_t));
         ed->fd = fd;
         ed->handler = fun;
-        event.data.fd=fd;
         event.data.ptr= ed;
         return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
 }
@@ -311,7 +399,8 @@ mypdu_t* pdu_allocate(char* buff, int len){
 	mypdu_t* pdu = (mypdu_t*)malloc(sizeof(mypdu_t));
 	if(!pdu) return NULL;
 	memset(&pdu->header, 0, sizeof(mybhs_t));
-	pdu->header.datasize = len;	
+	pdu->header.off = 0;
+	pdu->header.len = len;	
 	pdu->data = malloc(len);
 	if(!pdu->data){
 		printf("alloc mem failed\n");
@@ -341,16 +430,15 @@ int send_message(int fd, mypdu_t* pdu){
 		return -2;
 	}
 	int err;
-	if((err=write(fd, pdu, sizeof(mypdu_t)))<0){
+	if((err=write(fd, &pdu->header, sizeof(mybhs_t)))<0){
 		printf("write failed, errno is %d, reason: %s\n", errno, strerror(errno));
 		return err;
 	}
-	if(err!=sizeof(mypdu_t)){
+	if(err!=sizeof(mybhs_t)){
 		printf("pdu size not write\n");
 		return -1;
 	}
-	mybhs_t bhs = pdu->header;
-	int len = bhs.datasize;
+	int len = pdu->header.len;
 	if(len){
 		err= write(fd, pdu->data, len);
 		printf("write %d bytes", err);
@@ -382,7 +470,7 @@ int recv_message(int fd, mypdu_t* pdu){
 		printf("message len: %d, message is not full, drop and close\n", err);
 		return -1;
 	}
-	int datasize = pdu->header.datasize;
+	int datasize = pdu->header.len;
 	if(datasize){
 		char*rx_buff = malloc(datasize);
 		if(!rx_buff){
@@ -406,5 +494,51 @@ int recv_message(int fd, mypdu_t* pdu){
 		return err;
 	}
 	return 0;
+}
+
+int do_recv(connection_t* conn, int next_state){
+	int err;
+	int fd = conn->fd;
+	if(fd<0){
+		printf("fd %d is invalid\n", fd);
+		return -2;
+	}
+	if((err=read(fd, conn->rx_buffer, conn->rx_size))<0){
+		if(errno==EAGAIN || errno==EINTR){
+			printf("errno is %d, need try again\n", errno);
+			return 0;
+		}
+		printf("read failed, errno is %d, reason: %s\n", errno, strerror(errno));
+		conn->state = CLOSE;
+		return err;
+	}	
+	conn->rx_buffer += err;
+	conn->rx_size -= err;
+	if(0==conn->rx_size)
+		conn->rx_iostate = next_state;
+	return err;
+}
+
+int do_send(connection_t* conn, int next_state){
+	int err;
+	int fd = conn->fd;
+	if(fd<0){
+		printf("fd %d is invalid\n", fd);
+		return -2;
+	}
+	if((err=write(fd, conn->tx_buffer, conn->tx_size))<0){
+		if(errno==EAGAIN || errno==EINTR){
+			printf("errno is %d, need try again\n", errno);
+			return 0;
+		}
+		printf("write failed, errno is %d, reason: %s\n", errno, strerror(errno));
+		conn->state = CLOSE;
+		return err;
+	}	
+	conn->tx_buffer += err;
+	conn->tx_size -= err;
+	if(0==conn->tx_size)
+		conn->tx_iostate = next_state;
+	return err;
 }
 

@@ -18,16 +18,21 @@
 typedef void (*pfun)(int event, void* data);
 
 enum CONN_STATE{
-	FREE,
-	SCSI
+	FREE=0,
+	SCSI,
+	CLOSE
 };
 enum RX_STATE{
 	RX_HEADER,
-	RX_DATA
+	RX_INIT_DATA,
+	RX_DATA,
+	RX_END
+	
 };
 enum TX_STATE{
 	TX_HEADER,
-	TX_DATA
+	TX_DATA,
+	TX_END
 };
 
 typedef struct{
@@ -36,25 +41,40 @@ typedef struct{
         void* data;
 }usr_event_data_t;
 
+
+
 typedef struct{
+	int opcode;
+	char* filename;
+	int off;
+	int len;
+}mybhs_t;
+struct _Task;
+typedef struct _Task Task;
+typedef struct _conn_t{
 	int state;
 	int rx_iostate;
 	int tx_iostate;
-	mypdu_t req;
-	mypdu_t rsp;
+	mybhs_t req;
+	mybhs_t rsp;
 	int fd;
 	int rx_size;
-	char *rx_buffer;
+	void *rx_buffer;
 	int tx_size;
-	char *tx_buffer;
+	void *tx_buffer;
+	Task* rx_task;
+	Task* tx_task;
 	char initiator[NAME_LEN];
 	char target[NAME_LEN];
 }connection_t;
 
+typedef struct _Task{
+	connection_t* conn;
+	int off;
+	int len;
+	void* data;
+}Task;
 
-typedef struct{
-	int datasize;
-}mybhs_t;
 
 typedef struct{
 	mybhs_t header;
@@ -79,4 +99,5 @@ mypdu_t* pdu_allocate(char* buff, int len);
 void pdu_free(mypdu_t* pdu);
 int send_message(int fd, mypdu_t* pdu);
 int recv_message(int fd, mypdu_t* pdu);
+int do_recv(connection_t* conn, int next_state);
 #endif
