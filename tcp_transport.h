@@ -11,14 +11,23 @@
 #define BUF_LEN 4096
 #define NAME_LEN 64
 #define PDU_LEN sizeof(mypdu_t)
-#define HEADER_LEN sizeof(mybhs_t)
+#define HEADER_LEN sizeof(Request)
+#define INCOMING_SIZE sizeof(Request)
+#define OUTCOMING_SIZE sizeof(Request)
+#define RESPONSE_LEN sizeof(Response)
 
 //typedef void (*pfun)(struct epoll_event event);
 
 typedef void (*pfun)(int event, void* data);
 
+enum CONN_RESULT{
+	SUCCESS,
+	FAIL
+};
+
 enum CONN_STATE{
-	FREE=0,
+	FREE,
+	LOGIN,
 	SCSI,
 	CLOSE
 };
@@ -31,6 +40,7 @@ enum RX_STATE{
 };
 enum TX_STATE{
 	TX_HEADER,
+	TX_INIT_DATA,
 	TX_DATA,
 	TX_END
 };
@@ -48,17 +58,25 @@ typedef struct{
 	char* filename;
 	int off;
 	int len;
-}mybhs_t;
+}Request;
+typedef struct{
+	int result;
+	char reason[100];
+	int data_size;
+	char *data;
+}Response;
 struct _Task;
 typedef struct _Task Task;
 typedef struct _conn_t{
 	int state;
 	int rx_iostate;
 	int tx_iostate;
-	mybhs_t req;
-	mybhs_t rsp;
+	Request req;
+	Response rsp;
 	int fd;
 	int rx_size;
+	void* req_buffer;
+	void* rsp_buffer;
 	void *rx_buffer;
 	int tx_size;
 	void *tx_buffer;
@@ -77,7 +95,7 @@ typedef struct _Task{
 
 
 typedef struct{
-	mybhs_t header;
+	Request header;
 	void* data;
 }mypdu_t;
 
@@ -98,6 +116,7 @@ mypdu_t* pdu_init();
 mypdu_t* pdu_allocate(char* buff, int len);
 void pdu_free(mypdu_t* pdu);
 int send_message(int fd, mypdu_t* pdu);
-int recv_message(int fd, mypdu_t* pdu);
+int recv_message(int fd, Response* pdu);
 int do_recv(connection_t* conn, int next_state);
+int do_send(connection_t* conn, int next_state);
 #endif

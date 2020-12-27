@@ -24,14 +24,26 @@ int main(int argc, char* argv[]){
 		close(fd);
 		return -1;
 	}
-	mybhs_t req;
+	Request req;
 	memset(&req, 0, sizeof(req));
 	req.opcode = 0x01;
+	req.len = 0;
 	if((err=write(fd, &req, HEADER_LEN))<0){
 		printf("login failed, errno: %d, reason:%s\n", errno, strerror(errno));
 		exit(1);
 	}
-	
+	printf("write %d nums\n", err);
+	Response rsp;
+	memset(&rsp,0,sizeof(Response));
+	if((err=recv_message(fd, &rsp))<0){
+		printf("recv message result failed\n");
+		exit(1);
+	}
+	printf("response result is %d, detail: %s\n", rsp.result, rsp.reason);
+	if(rsp.data){
+		free(rsp.data);
+		rsp.data = NULL;
+	}
 	char write_buff[BUF_LEN];
 	int count;
 	while(1){
@@ -41,6 +53,11 @@ int main(int argc, char* argv[]){
 			break;
 		}
 		int len = strlen(write_buff);
+		if(len<1){
+			printf("fgets failed, continue...\n");
+			continue;
+		}
+		write_buff[len-1] = '\0';
 		printf("write data:%s, len:%d\n", write_buff, len);
 		mypdu_t* pdu = pdu_allocate(write_buff, len);
 		if(!pdu){
@@ -53,6 +70,16 @@ int main(int argc, char* argv[]){
 			printf("write meet error: %d, reason:%s\n", errno, strerror(errno));
 			break;
 		}
+		memset(&rsp,0,sizeof(Response));
+		if((err=recv_message(fd, &rsp))<0){
+			printf("recv message result failed\n");
+			exit(1);
+		}
+		printf("response result is %d, detail: %s\n", rsp.result, rsp.reason);	
+		if(rsp.data){
+			free(rsp.data);
+			rsp.data = NULL;
+		}	
 	};
 	close(fd);
 	return 0;
